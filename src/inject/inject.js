@@ -1,5 +1,5 @@
 var REDDIT_URL 		= "http://www.reddit.com/";
-var REDDIT_API_URL 	= "http://api.reddit.com/";
+var REDDIT_API_URL 	= "https://api.reddit.com/";
 
 // minimum of points for a submission for its comments to be considered
 var SUBMISSION_THRESHOLD 		= 2;
