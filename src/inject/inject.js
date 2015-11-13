@@ -215,6 +215,7 @@ function inTypicalSub(submission) {
 }
 
 var convert = function(convert){
+	convert = convert.replace('href="/r/', 'href="http://reddit.com/r/');
 	return $("<span />", { html: convert }).text();
 };
 
