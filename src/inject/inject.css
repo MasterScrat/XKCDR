@@ -1,0 +1,31 @@
+.xkcdr {
+  position: absolute;
+  z-index: 10;
+  box-sizing: border-box;
+  padding: 0 2px 14px 2px;
+  overflow: hidden;
+  text-align: left;
+  opacity: 0;
+  transform: translateX(var(--xkcdr-slide, 0));
+  transition: opacity var(--xkcdr-duration, 300ms), transform var(--xkcdr-duration, 300ms);
+}
+
+.xkcdr.xkcdr-in {
+  opacity: 1;
+  transform: none;
+}
+
+.xkcdr p {
+  margin: 0.4em 0;
+}
+
+.xkcdr-author {
+  position: absolute;
+  bottom: 3px;
+  right: 7px;
+  display: none;
+}
+
+.xkcdr:hover .xkcdr-author {
+  display: block;
+}

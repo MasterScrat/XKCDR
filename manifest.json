@@ -1,27 +1,25 @@
 {
-   "background": {
-      "persistent": false,
-      "scripts": [ "src/bg/background.js" ]
-   },
-   "content_scripts": [ {
-      "css": [  ],
-      "js": [ "src/inject/inject.js", "js/jquery/jquery.js" ],
-      "matches": [ "*://xkcd.com/*" ]
-   } ],
-   "content_security_policy": "script-src 'self' https://www.google-analytics.com; object-src 'self'",
+   "manifest_version": 3,
+   "name": "XKCD+R",
    "description": "Display Reddit's best comments along XKCD strips!",
+   "version": "0.1.0",
    "icons": {
       "128": "icons/icon128.png",
       "16": "icons/icon16.png",
       "48": "icons/icon48.png"
    },
-   "manifest_version": 2,
-   "name": "XKCD+R",
-   "page_action": {
+   "action": {
       "default_icon": "icons/icon38.png",
       "default_title": "XKCD+R"
    },
-   "permissions": [ "tabs", "storage", "*://xkcd.com/*" ],
-   "update_url": "https://clients2.google.com/service/update2/crx",
-   "version": "0.0.13"
+   "background": {
+      "service_worker": "src/bg/background.js"
+   },
+   "content_scripts": [ {
+      "js": [ "src/inject/inject.js" ],
+      "css": [ "src/inject/inject.css" ],
+      "matches": [ "https://xkcd.com/*" ]
+   } ],
+   "permissions": [ "storage" ],
+   "host_permissions": [ "https://www.reddit.com/*" ]
 }

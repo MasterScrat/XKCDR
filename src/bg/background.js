@@ -1,88 +1,126 @@
+// Background service worker: owns the enabled/disabled toggle and all Reddit
+// requests (content scripts can't make cross-origin requests in MV3).
+//
+// Requests are made with the user's Reddit session cookies, since Reddit
+// rejects unauthenticated API calls. If the user isn't logged into Reddit,
+// requests fail and the content script shows nothing.
+
 var NAME = "XKCD+R";
+var REDDIT_URL = "https://www.reddit.com";
 
-var lastTabId;
-var enable = true;
+// minimum of points for a submission for its comments to be considered
+var SUBMISSION_THRESHOLD = 2;
 
-// a tab is loaded
-chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
-  if(validDomain(tab.url)) {
-    if(changeInfo.status == 'complete') {
+// max number of comments to retrieve per submission
+var NB_RETRIEVED_COMMENTS = 200;
 
-      console.info('loaded!');
+// only get comments from these subs
+var typicalSubs = ["comics", "xkcd", "xkcdcomic", "funny"];
 
-      chrome.storage.sync.get('disabled', function(disabled) {
-          console.log('enabled in storage: ' + !disabled.disabled);
-          lastTabId = tabId;
+// ---- enable toggle ----
 
-          setEnabled(!disabled.disabled);
+function updateIcon(enabled) {
+  chrome.action.setIcon({ path: "/icons/icon38" + (enabled ? "" : "d") + ".png" });
+  chrome.action.setTitle({ title: NAME + (enabled ? "" : " (disabled)") });
+}
+
+chrome.runtime.onInstalled.addListener(function() {
+  chrome.storage.sync.get("disabled", function(s) { updateIcon(!s.disabled); });
+});
+
+chrome.runtime.onStartup.addListener(function() {
+  chrome.storage.sync.get("disabled", function(s) { updateIcon(!s.disabled); });
+});
+
+// user clicked the toolbar icon; content scripts react via storage.onChanged
+chrome.action.onClicked.addListener(function() {
+  chrome.storage.sync.get("disabled", function(s) {
+    var disabled = !s.disabled;
+    chrome.storage.sync.set({ disabled: disabled });
+    updateIcon(!disabled);
+  });
+});
+
+// ---- Reddit ----
+
+async function redditGet(path) {
+  var response = await fetch(REDDIT_URL + path, { credentials: "include" });
+  if (!response.ok) {
+    throw new Error("Reddit returned " + response.status + " for " + path);
+  }
+  return response.json();
+}
+
+// All the URL spellings a submission for this comic could have used.
+function urlVariants(comicUrl, imgUrl) {
+  var path = new URL(comicUrl).pathname.replace(/\/$/, "");
+  var variants = [];
+  ["https://", "http://"].forEach(function(scheme) {
+    ["xkcd.com", "www.xkcd.com", "m.xkcd.com"].forEach(function(host) {
+      variants.push(scheme + host + path + "/");
+      variants.push(scheme + host + path);
+    });
+  });
+  if (imgUrl) {
+    var img = imgUrl.replace(/^https?:/, "");
+    variants.push("https:" + img, "http:" + img);
+  }
+  return variants;
+}
+
+async function findSubmissions(comicUrl, imgUrl) {
+  var seen = {};
+  var submissions = [];
+  for (var url of urlVariants(comicUrl, imgUrl)) {
+    var listing = await redditGet("/api/info.json?url=" + encodeURIComponent(url));
+    listing.data.children.forEach(function(child) {
+      var s = child.data;
+      if (!seen[s.id]) {
+        seen[s.id] = true;
+        submissions.push(s);
+      }
+    });
+  }
+  return submissions;
+}
+
+async function getComments(comicUrl, imgUrl) {
+  var submissions = (await findSubmissions(comicUrl, imgUrl)).filter(function(s) {
+    return s.num_comments > 0 &&
+      s.score >= SUBMISSION_THRESHOLD &&
+      typicalSubs.indexOf(s.subreddit.toLowerCase()) != -1;
+  });
+  console.info(submissions.length + " relevant submissions for " + comicUrl);
+
+  var comments = [];
+  for (var s of submissions) {
+    var thread = await redditGet(s.permalink + ".json?sort=top&limit=" + NB_RETRIEVED_COMMENTS);
+    thread[1].data.children.forEach(function(c) {
+      if (c.kind != "t1") return; // "more" link
+      comments.push({
+        id: c.data.id,
+        author: c.data.author,
+        score: c.data.score,
+        body: c.data.body,
+        bodyHtml: c.data.body_html,
+        permalink: REDDIT_URL + s.permalink + c.data.id + "/"
       });
-    }
-  }
-});
-
-// tab is selected due to window selection
-chrome.windows.onFocusChanged.addListener(function(tab){
-  chrome.tabs.query({active:true,currentWindow:true}, function(tabArray){
-    if(validDomain(tabArray[0].url)) {
-      console.info('window focused!');
-
-      lastTabId = tabArray[0].id;
-      console.log(tabArray[0]);
-      setEnabled(enable);
-    }
-  });
-});
-
-// tab switched to from another tab
-chrome.tabs.onActivated.addListener(function(tab){
-  chrome.tabs.query({active:true,currentWindow:true}, function(tabArray){
-    if(validDomain(tabArray[0].url)) {
-      console.info('tab switched to!');
-
-      lastTabId = tabArray[0].id;
-      console.log(tabArray[0]);
-      setEnabled(enable);
-    }
-  });
-});
-
-// user clicked the page action icon
-chrome.pageAction.onClicked.addListener(function(tab) {
-  enable = !enable;
-  setEnabled(enable);
-});
-
-function validDomain(url) {
-  return (url.indexOf('://xkcd.com') != -1);
-}
-
-function setEnabled(enabled) {
-  console.log('setEnabled: ' + enabled);
-
-  var iconSuffix = "";
-  var titleSuffix = "";
-
-  if(!enabled) {
-    iconSuffix = "d";
-    titleSuffix = " (disabled)";
+    });
   }
 
-  chrome.tabs.executeScript(lastTabId, {code: "setEnable("+enabled+");"});
-  chrome.pageAction.setIcon({path:"icons/icon38"+iconSuffix+".png", tabId: lastTabId});
-  chrome.pageAction.setTitle({title:NAME + titleSuffix, tabId: lastTabId});
-  chrome.pageAction.show(lastTabId);
-
-  chrome.storage.sync.set({'disabled': !enabled});
-  enable = enabled;
+  comments.sort(function(a, b) { return b.score - a.score; });
+  return comments;
 }
 
-// Google Universal Analytics
-(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
-(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
-m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
-})(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
- 
-ga('create', 'UA-36471625-3', 'auto');
-ga('set', 'checkProtocolTask', function(){});
-ga('require', 'displayfeatures');
-ga('send', 'pageview', 'started');
+chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+  if (message.type != "getComments") return;
+
+  getComments(message.comicUrl, message.imgUrl)
+    .then(function(comments) { sendResponse({ comments: comments }); })
+    .catch(function(e) {
+      console.warn(e);
+      sendResponse({ error: String(e) });
+    });
+
+  return true; // async response
+});
