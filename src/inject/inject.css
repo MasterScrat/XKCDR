@@ -1,8 +1,7 @@
 .xkcdr {
   position: absolute;
   z-index: 10;
-  box-sizing: border-box;
-  padding: 0 2px 14px 2px;
+  padding: 0 2px;
   overflow: hidden;
   opacity: 0;
   transform: translateX(var(--xkcdr-slide, 0));
@@ -12,10 +11,6 @@
 .xkcdr.xkcdr-in {
   opacity: 1;
   transform: none;
-}
-
-.xkcdr p {
-  margin: 0.4em 0;
 }
 
 .xkcdr-author {

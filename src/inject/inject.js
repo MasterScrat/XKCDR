@@ -14,7 +14,14 @@ var blockedUsernames = ["xkcd_bot", "xkcdcomic_bot", "rss_feed", "AutoModerator"
 
 var COLUMN_WIDTH = 250;
 var MIN_COLUMN_WIDTH = 160;
-var COLUMN_GAP = 20;
+
+// how far columns overlap the comic's white box, and how far above the comic
+// image they start (about level with the navigation buttons)
+var BOX_OVERLAP = 7;
+var TOP_OFFSET = 55;
+
+// horizontal padding + borders of a comment box, on top of its width
+var BOX_CHROME = 7;
 
 // keep comments at least this far from the window edges
 var PAGE_MARGIN = 8;
@@ -107,7 +114,8 @@ function renderBody(body) {
 
 function displayComments(comments) {
   var img = comicImage();
-  if (!img) return;
+  var box = document.getElementById("middleContainer");
+  if (!img || !box) return;
 
   // xkcd's <body> is a positioned, centered container, so absolute coordinates
   // are relative to it rather than to the page. Place everything inside a
@@ -119,33 +127,40 @@ function displayComments(comments) {
     document.body.appendChild(layer);
   }
   var origin = layer.getBoundingClientRect();
-  var rect = img.getBoundingClientRect();
+  var imgRect = img.getBoundingClientRect();
+  var boxRect = box.getBoundingClientRect();
   var viewportWidth = document.documentElement.clientWidth;
 
-  var top = rect.top - origin.top;
-  var height = Math.max(rect.height, 300);
+  // As in the original layout: columns hug the comic's white box, slightly
+  // overlapping its edges, and move inwards for narrow comics.
+  var inset = Math.max(0, (boxRect.width - imgRect.width) / 3) + BOX_OVERLAP;
+  var top = imgRect.top - origin.top - TOP_OFFSET;
+  var height = Math.max(imgRect.height, 300);
 
-  // each column gets whatever room there is between the comic and the window
-  // edge, up to COLUMN_WIDTH; a column with too little room is skipped
+  // each column gets up to COLUMN_WIDTH, less if the window edge is closer;
+  // a column with too little room is skipped
+  var leftEdge = boxRect.left + inset;
+  var rightEdge = boxRect.right - inset;
   var columns = [
-    { width: Math.min(COLUMN_WIDTH, rect.left - COLUMN_GAP - PAGE_MARGIN), side: -1 },
-    { width: Math.min(COLUMN_WIDTH, viewportWidth - rect.right - COLUMN_GAP - PAGE_MARGIN), side: 1 }
+    { side: -1, edge: leftEdge, width: Math.min(COLUMN_WIDTH, leftEdge - PAGE_MARGIN - BOX_CHROME) },
+    { side: 1, edge: rightEdge, width: Math.min(COLUMN_WIDTH, viewportWidth - rightEdge - PAGE_MARGIN - BOX_CHROME) }
   ].filter(function(c) { return c.width >= MIN_COLUMN_WIDTH; });
 
   if (!columns.length) {
     console.info("XKCD+R: window too narrow to show comments next to the comic.");
     return;
   }
-
-  var column = 0;
-  var previous = 0;
+  columns.forEach(function(c) { c.filled = 0; c.full = false; });
 
   for (var comment of comments.filter(worthy)) {
-    if (column >= columns.length) break;
+    // alternate sides, so a handful of comments doesn't all end up on the left
+    var open = columns.filter(function(c) { return !c.full; });
+    if (!open.length) break;
+    var col = open.reduce(function(a, b) { return b.filled < a.filled ? b : a; });
 
     var div = document.createElement("div");
     div.className = "box xkcdr";
-    div.style.width = columns[column].width + "px";
+    div.style.width = col.width + "px";
     div.appendChild(renderBody(comment.body));
 
     var link = document.createElement("small");
@@ -161,35 +176,29 @@ function displayComments(comments) {
     // measure before placing
     div.style.visibility = "hidden";
     layer.appendChild(div);
+    var outerWidth = div.offsetWidth;
     var h = div.offsetHeight;
 
-    if (previous > 0 && previous + h > height) {
-      column++;
-      previous = 0;
-      if (column >= columns.length) {
-        div.remove();
-        break;
-      }
-      div.style.width = columns[column].width + "px";
-      h = div.offsetHeight;
+    if (col.filled > 0 && col.filled + h > height) {
+      col.full = true;
+      div.remove();
+      continue;
     }
 
-    var col = columns[column];
-
     // drift away from the comic in a gentle arc, but never past the window edge
-    var wobble = Math.sin((previous / height) * Math.PI) * 30 + Math.random() * 20;
+    var wobble = Math.sin((col.filled / height) * Math.PI) * 30 + (Math.random() - 0.5) * 40;
     var left = col.side < 0
-      ? Math.max(PAGE_MARGIN, rect.left - COLUMN_GAP - col.width - wobble)
-      : Math.min(viewportWidth - PAGE_MARGIN - col.width, rect.right + COLUMN_GAP + wobble);
+      ? Math.max(PAGE_MARGIN, col.edge - outerWidth - wobble)
+      : Math.min(viewportWidth - PAGE_MARGIN - outerWidth, col.edge + wobble);
 
-    div.style.top = (top + previous) + "px";
+    div.style.top = (top + col.filled) + "px";
     div.style.left = (left - origin.left) + "px";
     div.style.setProperty("--xkcdr-slide", (col.side * slideIn) + "px");
     div.style.setProperty("--xkcdr-duration", transitionTime + "ms");
     div.style.visibility = "";
     div.classList.add("xkcdr-in");
 
-    previous += h + commentVerticalSpacing;
+    col.filled += h + commentVerticalSpacing;
   }
 }
 
