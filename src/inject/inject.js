@@ -13,7 +13,11 @@ var COMMENT_LENGTH_THRESHOLD = 350;
 var blockedUsernames = ["xkcd_bot", "xkcdcomic_bot", "rss_feed", "AutoModerator"];
 
 var COLUMN_WIDTH = 250;
+var MIN_COLUMN_WIDTH = 160;
 var COLUMN_GAP = 20;
+
+// keep comments at least this far from the window edges
+var PAGE_MARGIN = 8;
 var commentVerticalSpacing = 15;
 
 // slide in animation length
@@ -105,21 +109,43 @@ function displayComments(comments) {
   var img = comicImage();
   if (!img) return;
 
+  // xkcd's <body> is a positioned, centered container, so absolute coordinates
+  // are relative to it rather than to the page. Place everything inside a
+  // zero-size layer and measure from that layer's own position instead.
+  var layer = document.getElementById("xkcdr-layer");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = "xkcdr-layer";
+    document.body.appendChild(layer);
+  }
+  var origin = layer.getBoundingClientRect();
   var rect = img.getBoundingClientRect();
-  var top = rect.top + window.scrollY;
-  var leftEdge = rect.left + window.scrollX;
-  var rightEdge = rect.right + window.scrollX;
+  var viewportWidth = document.documentElement.clientWidth;
+
+  var top = rect.top - origin.top;
   var height = Math.max(rect.height, 300);
+
+  // each column gets whatever room there is between the comic and the window
+  // edge, up to COLUMN_WIDTH; a column with too little room is skipped
+  var columns = [
+    { width: Math.min(COLUMN_WIDTH, rect.left - COLUMN_GAP - PAGE_MARGIN), side: -1 },
+    { width: Math.min(COLUMN_WIDTH, viewportWidth - rect.right - COLUMN_GAP - PAGE_MARGIN), side: 1 }
+  ].filter(function(c) { return c.width >= MIN_COLUMN_WIDTH; });
+
+  if (!columns.length) {
+    console.info("XKCD+R: window too narrow to show comments next to the comic.");
+    return;
+  }
 
   var column = 0;
   var previous = 0;
 
   for (var comment of comments.filter(worthy)) {
-    if (column > 1) break;
+    if (column >= columns.length) break;
 
     var div = document.createElement("div");
     div.className = "box xkcdr";
-    div.style.width = COLUMN_WIDTH + "px";
+    div.style.width = columns[column].width + "px";
     div.appendChild(renderBody(comment.body));
 
     var link = document.createElement("small");
@@ -134,26 +160,31 @@ function displayComments(comments) {
 
     // measure before placing
     div.style.visibility = "hidden";
-    document.body.appendChild(div);
+    layer.appendChild(div);
     var h = div.offsetHeight;
 
     if (previous > 0 && previous + h > height) {
       column++;
       previous = 0;
-      if (column > 1) {
+      if (column >= columns.length) {
         div.remove();
         break;
       }
+      div.style.width = columns[column].width + "px";
+      h = div.offsetHeight;
     }
 
-    var wobble = Math.sin((previous / height) * Math.PI) * 30 + (Math.random() - 0.5) * 40;
-    var left = column == 0
-      ? leftEdge - COLUMN_GAP - COLUMN_WIDTH - wobble
-      : rightEdge + COLUMN_GAP + wobble;
+    var col = columns[column];
+
+    // drift away from the comic in a gentle arc, but never past the window edge
+    var wobble = Math.sin((previous / height) * Math.PI) * 30 + Math.random() * 20;
+    var left = col.side < 0
+      ? Math.max(PAGE_MARGIN, rect.left - COLUMN_GAP - col.width - wobble)
+      : Math.min(viewportWidth - PAGE_MARGIN - col.width, rect.right + COLUMN_GAP + wobble);
 
     div.style.top = (top + previous) + "px";
-    div.style.left = left + "px";
-    div.style.setProperty("--xkcdr-slide", (column == 0 ? -slideIn : slideIn) + "px");
+    div.style.left = (left - origin.left) + "px";
+    div.style.setProperty("--xkcdr-slide", (col.side * slideIn) + "px");
     div.style.setProperty("--xkcdr-duration", transitionTime + "ms");
     div.style.visibility = "";
     div.classList.add("xkcdr-in");
@@ -203,6 +234,17 @@ function setEnable(enabled) {
 }
 
 chrome.storage.sync.get("disabled", function(s) { setEnable(!s.disabled); });
+
+// columns depend on the window width, so lay comments out again on resize
+var resizeTimer;
+window.addEventListener("resize", function() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function() {
+    if (!shown || !cachedComments) return;
+    document.querySelectorAll(".xkcdr").forEach(function(el) { el.remove(); });
+    displayComments(cachedComments);
+  }, 200);
+});
 
 chrome.storage.onChanged.addListener(function(changes, area) {
   if (area == "sync" && changes.disabled) setEnable(!changes.disabled.newValue);

@@ -36,3 +36,12 @@
   border-left: 2px solid #ccc;
   color: #555;
 }
+
+#xkcdr-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+}
