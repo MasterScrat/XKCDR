@@ -4,7 +4,7 @@
    },
    "content_scripts": [ {
       "css": [  ],
-      "js": [ "src/inject/inject.js", "js/jquery/jquery.js" ],
+      "js": [ "src/inject/inject.js" ],
       "matches": [ "*://xkcd.com/*" ]
    } ],
    "description": "Display Reddit's best comments along XKCD strips!",

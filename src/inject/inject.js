@@ -58,8 +58,9 @@ function setEnable(enabled) {
 		main();
 
 	} else {
-		$(".xkcdr").fadeOut(transitionTime, function(){
-			$(this).remove();
+		document.querySelectorAll(".xkcdr").forEach(function(commentDiv) {
+			commentDiv.style.opacity = 0;
+			setTimeout(function() { commentDiv.remove(); }, transitionTime);
 		});
 	}
 
@@ -79,7 +80,7 @@ function main() {
 
 	// root page: find latest comic from "prev" link
 	if(window.location.pathname == '/') {
-		url = getHost() + ( $('a[rel=prev]').get(0).pathname.replace(/\//g,'')*1 +1) + "/";
+		url = getHost() + ( document.querySelector('a[rel=prev]').pathname.replace(/\//g,'')*1 +1) + "/";
 		console.info('Index page! using ' + url);
 	}
 
@@ -89,17 +90,18 @@ function main() {
 		return;
 	}
 
-	var imgUrl = $('#comic img').attr('src');
+	var img = document.querySelector('#comic img');
+	var imgUrl = img ? img.getAttribute('src') : null;
 	loading = true;
 
 	findSubmissions(urlQueries(comicNum, imgUrl), [], function(submissions) {
-		submissions = $.grep(submissions, function(s) {
+		submissions = submissions.filter(function(s) {
 			return isComicUrl(s.url, comicNum, imgUrl);
 		});
 		console.info(submissions.length + " submissions");
 
 		var relevant = [];
-		$.each(submissions, function(i, submission) {
+		submissions.forEach(function(submission) {
 			if(submission.num_comments == 0) {
 				console.info('No comments.');
 
@@ -121,7 +123,7 @@ function main() {
 
 // Arctic Shift requests go through the background worker, which caches them
 function apiGet(path, params, success) {
-	chrome.runtime.sendMessage({type: "get", url: REDDIT_API_URL + path + "?" + $.param(params)}, function(response) {
+	chrome.runtime.sendMessage({type: "get", url: REDDIT_API_URL + path + "?" + new URLSearchParams(params)}, function(response) {
 		if(!response || response.error) {
 			console.warn("XKCD+R: couldn't load Reddit comments.", response && response.error);
 			success(null);
@@ -156,8 +158,8 @@ function findSubmissions(queries, found, done) {
 	}
 
 	apiGet("posts/search", {url: queries[0], limit: 100, fields: "id,url,subreddit,score,num_comments"}, function(posts) {
-		$.each(posts || [], function(i, post) {
-			if(!$.grep(found, function(s) { return s.id == post.id; }).length) {
+		(posts || []).forEach(function(post) {
+			if(!found.some(function(s) { return s.id == post.id; })) {
 				found.push(post);
 			}
 		});
@@ -177,7 +179,7 @@ function loadComments(submissions, found, done) {
 	apiGet("comments/tree", {link_id: submission.id, limit: NB_RETRIEVED_COMMENTS}, function(comments) {
 		console.info((comments || []).length + ' comments, ' + submission.score + ' points in "' + submission.subreddit + '"');
 
-		$.each(comments || [], function(i, comment) {
+		(comments || []).forEach(function(comment) {
 			if(comment.kind == "t1") {
 				found.push(comment);
 			}
@@ -187,24 +189,25 @@ function loadComments(submissions, found, done) {
 }
 
 function displayComments(comments) {
-	var imgEl = $($('#comic').find($('img')));
-	var boxEl = $('#middleContainer');
-	if(!imgEl.length || !boxEl.length) {
+	var imgEl = document.querySelector('#comic img');
+	var boxEl = document.getElementById('middleContainer');
+	if(!imgEl || !boxEl) {
 		return;
 	}
 
 	// xkcd's <body> is a positioned, centered container, so absolute coordinates
 	// are relative to it rather than to the page. Place everything inside a
 	// zero-size container and measure from that container's own position instead.
-	var container = $('#xkcdr-container');
-	if(!container.length) {
-		container = $('<div id="xkcdr-container" />')
-			.css({position: 'absolute', top: 0, left: 0, width: 0, height: 0, overflow: 'visible'})
-			.appendTo("body");
+	var container = document.getElementById('xkcdr-container');
+	if(!container) {
+		container = document.createElement('div');
+		container.id = 'xkcdr-container';
+		css(container, {position: 'absolute', top: 0, left: 0, width: 0, height: 0, overflow: 'visible'});
+		document.body.appendChild(container);
 	}
-	var origin = container.get(0).getBoundingClientRect();
-	var imgRect = imgEl.get(0).getBoundingClientRect();
-	var boxRect = boxEl.get(0).getBoundingClientRect();
+	var origin = container.getBoundingClientRect();
+	var imgRect = imgEl.getBoundingClientRect();
+	var boxRect = boxEl.getBoundingClientRect();
 	var viewportWidth = document.documentElement.clientWidth;
 
 	// columns hug the comic's white box, overlapping its edges, and move
@@ -217,56 +220,51 @@ function displayComments(comments) {
 	// a column with too little room is skipped
 	var leftEdge = boxRect.left + inset;
 	var rightEdge = boxRect.right - inset;
-	var columns = $.grep([
+	var columns = [
 		{side: -1, edge: leftEdge, width: Math.min(COLUMN_WIDTH, leftEdge - PAGE_MARGIN - BOX_CHROME), previous: 0},
 		{side: 1, edge: rightEdge, width: Math.min(COLUMN_WIDTH, viewportWidth - rightEdge - PAGE_MARGIN - BOX_CHROME), previous: 0}
-	], function(c) { return c.width >= MIN_COLUMN_WIDTH; });
+	].filter(function(c) { return c.width >= MIN_COLUMN_WIDTH; });
 
 	if(!columns.length) {
 		console.info("XKCD+R: window too narrow to show comments next to the comic.");
 		return;
 	}
 
-	$.each(comments, function(i, comment) {
+	for(var comment of comments) {
 		// alternate sides, so a handful of comments doesn't all end up on the left
-		var open = $.grep(columns, function(c) { return !c.full; });
+		var open = columns.filter(function(c) { return !c.full; });
 		if(!open.length) {
-			return false;
+			break;
 		}
-		var column = open[0];
-		$.each(open, function(j, c) {
-			if(c.previous < column.previous) column = c;
-		});
+		var column = open.reduce(function(a, b) { return b.previous < a.previous ? b : a; });
 
 		if(worthy(comment) && !blockedUser(comment) && !deleted(comment)) {
 			// comment <div> element
-			var commentDiv = $('<div class="box xkcdr" />')
-				.css({'padding-left':2, 'padding-right':2, width: column.width, position: 'absolute', 'z-index': 10, 'overflow': 'hidden'})
-				.append(renderBody(comment.data.body));
+			var commentDiv = document.createElement('div');
+			commentDiv.className = 'box xkcdr';
+			css(commentDiv, {paddingLeft: 2, paddingRight: 2, width: column.width, position: 'absolute', zIndex: 10, overflow: 'hidden'});
+			commentDiv.append.apply(commentDiv, renderBody(comment.data.body));
 
-			var linkDiv = $('<small />')
-				.append($('<a />', {href: permalink(comment), target: '_blank', rel: 'noopener', text: comment.data.author}))
-				.css({position: 'absolute', bottom: 3, right: 7})
-				.hide()
-				.prependTo(commentDiv);
+			var linkDiv = document.createElement('small');
+			linkDiv.appendChild(link(permalink(comment), comment.data.author));
+			css(linkDiv, {position: 'absolute', bottom: 3, right: 7, display: 'none'});
+			commentDiv.prepend(linkDiv);
 
 			// add link to submitter on hover
-			commentDiv.hover(function() {
-				linkDiv.show();
-			}, function() {
-				linkDiv.hide();
-			});
+			commentDiv.addEventListener('mouseenter', function() { this.firstChild.style.display = ''; });
+			commentDiv.addEventListener('mouseleave', function() { this.firstChild.style.display = 'none'; });
 
 			// measure before placing
-			commentDiv.css('visibility', 'hidden').appendTo(container);
-			var commentHeight = commentDiv.outerHeight();
-			var commentWidth = commentDiv.outerWidth();
+			commentDiv.style.visibility = 'hidden';
+			container.appendChild(commentDiv);
+			var commentHeight = commentDiv.offsetHeight;
+			var commentWidth = commentDiv.offsetWidth;
 
 			// column overflow?
 			if(column.previous > 0 && column.previous + commentHeight > height) {
 				column.full = true;
 				commentDiv.remove();
-				return;
+				continue;
 			}
 
 			// drift away from the comic in a gentle arc, but never past the window edge
@@ -275,20 +273,36 @@ function displayComments(comments) {
 				? Math.max(PAGE_MARGIN, column.edge - commentWidth - wobble)
 				: Math.min(viewportWidth - PAGE_MARGIN - commentWidth, column.edge + wobble);
 
-			// add and animate the comment, sliding in towards the comic
-			commentDiv
-				.css({top: top + column.previous, left: left - origin.left + column.side * slideIn, visibility: ''})
-				.animate({marginLeft: (-1 * column.side * slideIn) + "px"}, {
-					duration: transitionTime,
-					queue: false
-				})
-				.hide()
-				.fadeIn(transitionTime);
+			// add and animate the comment, fading and sliding in towards the comic
+			css(commentDiv, {top: top + column.previous, left: left - origin.left + column.side * slideIn, opacity: 0, visibility: ''});
+			commentDiv.offsetWidth; // apply the start position before transitioning
+			css(commentDiv, {
+				transition: 'opacity ' + transitionTime + 'ms, margin-left ' + transitionTime + 'ms',
+				opacity: 1,
+				marginLeft: -1 * column.side * slideIn
+			});
 
 			column.previous += commentHeight + commentVerticalSpacing;
 		}
+	}
+}
 
-	});
+// set inline styles; numbers are pixels, except for opacity and z-index
+function css(el, styles) {
+	for(var name in styles) {
+		var value = styles[name];
+		el.style[name] = (typeof value == 'number' && name != 'opacity' && name != 'zIndex') ? value + 'px' : value;
+	}
+	return el;
+}
+
+function link(href, text) {
+	var a = document.createElement('a');
+	a.href = href;
+	a.target = '_blank';
+	a.rel = 'noopener';
+	a.textContent = text;
+	return a;
 }
 
 function worthy(comment) {
@@ -313,11 +327,11 @@ function deleted(comment) {
 }
 
 function blockedUser(comment) {
-	return ($.inArray(comment.data.author, blockedUsernames) != -1);
+	return (blockedUsernames.indexOf(comment.data.author) != -1);
 }
 
 function inTypicalSub(submission) {
-	return ($.inArray(submission.subreddit.toLowerCase(), typicalSubs) != -1);
+	return (typicalSubs.indexOf(submission.subreddit.toLowerCase()) != -1);
 }
 
 // archived permalinks are malformed for older threads; build our own
@@ -351,9 +365,11 @@ function renderInline(parent, text) {
 		parent.append(document.createTextNode(text.slice(last, m.index)));
 		var href = m[1] ? safeUrl(m[2]) : m[3] ? safeUrl(m[3]) : null;
 		if(href) {
-			parent.append($('<a />', {href: href, target: '_blank', rel: 'noopener', text: m[1] || m[3]}));
+			parent.append(link(href, m[1] || m[3]));
 		} else if(m[4] || m[5]) {
-			parent.append($(m[4] ? '<strong />' : '<em />', {text: m[4] || m[5]}));
+			var em = document.createElement(m[4] ? 'strong' : 'em');
+			em.textContent = m[4] || m[5];
+			parent.append(em);
 		} else {
 			parent.append(document.createTextNode(m[0]));
 		}
@@ -364,14 +380,14 @@ function renderInline(parent, text) {
 
 function renderBody(body) {
 	var blocks = [];
-	$.each(convert(body).split(/\n\s*\n/), function(i, block) {
-		block = $.trim(block);
+	convert(body).split(/\n\s*\n/).forEach(function(block) {
+		block = block.trim();
 		if(!block) return;
 
 		var quote = /^>/.test(block);
 		var el = quote
-			? $('<blockquote />').css({margin: '0.4em 0', 'padding-left': 6, 'border-left': '2px solid #ccc', color: '#555'})
-			: $('<p />');
+			? css(document.createElement('blockquote'), {margin: '0.4em 0', paddingLeft: 6, borderLeft: '2px solid #ccc', color: '#555'})
+			: document.createElement('p');
 		renderInline(el, quote ? block.replace(/^>\s?/gm, "") : block);
 		blocks.push(el);
 	});
@@ -394,13 +410,12 @@ chrome.storage.onChanged.addListener(function(changes, area) {
 });
 
 // columns depend on the window width, so lay comments out again on resize
-// (plain DOM: this runs before jQuery is loaded)
 var resizeTimer;
 window.addEventListener("resize", function() {
 	clearTimeout(resizeTimer);
 	resizeTimer = setTimeout(function() {
 		if(!oldEnabled || !allComments) return;
-		$(".xkcdr").remove();
+		document.querySelectorAll(".xkcdr").forEach(function(commentDiv) { commentDiv.remove(); });
 		displayComments(allComments);
 	}, 200);
 });
