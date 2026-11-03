@@ -1,61 +1,25 @@
 var NAME = "XKCD+R";
 
-var lastTabId;
-var enable = true;
+// browser started or extension installed: show the stored state on the icon
+chrome.runtime.onStartup.addListener(restoreEnabled);
+chrome.runtime.onInstalled.addListener(restoreEnabled);
 
-// a tab is loaded
-chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
-  if(validDomain(tab.url)) {
-    if(changeInfo.status == 'complete') {
+function restoreEnabled() {
+  chrome.storage.sync.get('disabled', function(disabled) {
+      console.log('enabled in storage: ' + !disabled.disabled);
 
-      console.info('loaded!');
-
-      chrome.storage.sync.get('disabled', function(disabled) {
-          console.log('enabled in storage: ' + !disabled.disabled);
-          lastTabId = tabId;
-
-          setEnabled(!disabled.disabled);
-      });
-    }
-  }
-});
-
-// tab is selected due to window selection
-chrome.windows.onFocusChanged.addListener(function(tab){
-  chrome.tabs.query({active:true,currentWindow:true}, function(tabArray){
-    if(validDomain(tabArray[0].url)) {
-      console.info('window focused!');
-
-      lastTabId = tabArray[0].id;
-      console.log(tabArray[0]);
-      setEnabled(enable);
-    }
+      setEnabled(!disabled.disabled);
   });
-});
-
-// tab switched to from another tab
-chrome.tabs.onActivated.addListener(function(tab){
-  chrome.tabs.query({active:true,currentWindow:true}, function(tabArray){
-    if(validDomain(tabArray[0].url)) {
-      console.info('tab switched to!');
-
-      lastTabId = tabArray[0].id;
-      console.log(tabArray[0]);
-      setEnabled(enable);
-    }
-  });
-});
-
-// user clicked the page action icon
-chrome.pageAction.onClicked.addListener(function(tab) {
-  enable = !enable;
-  setEnabled(enable);
-});
-
-function validDomain(url) {
-  return (url.indexOf('://xkcd.com') != -1);
 }
 
+// user clicked the toolbar icon
+chrome.action.onClicked.addListener(function(tab) {
+  chrome.storage.sync.get('disabled', function(disabled) {
+    setEnabled(disabled.disabled);
+  });
+});
+
+// content scripts in every xkcd tab follow the stored state (storage.onChanged)
 function setEnabled(enabled) {
   console.log('setEnabled: ' + enabled);
 
@@ -67,22 +31,51 @@ function setEnabled(enabled) {
     titleSuffix = " (disabled)";
   }
 
-  chrome.tabs.executeScript(lastTabId, {code: "setEnable("+enabled+");"});
-  chrome.pageAction.setIcon({path:"icons/icon38"+iconSuffix+".png", tabId: lastTabId});
-  chrome.pageAction.setTitle({title:NAME + titleSuffix, tabId: lastTabId});
-  chrome.pageAction.show(lastTabId);
+  chrome.action.setIcon({path:"/icons/icon38"+iconSuffix+".png"});
+  chrome.action.setTitle({title:NAME + titleSuffix});
 
   chrome.storage.sync.set({'disabled': !enabled});
-  enable = enabled;
 }
 
-// Google Universal Analytics
-(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
-(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
-m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
-})(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
- 
-ga('create', 'UA-36471625-3', 'auto');
-ga('set', 'checkProtocolTask', function(){});
-ga('require', 'displayfeatures');
-ga('send', 'pageview', 'started');
+// Arctic Shift requests from content scripts go through here, so that tabs
+// share one request per URL, and results are kept while this worker is alive.
+// Chrome stops the worker after ~30s idle, which clears the cache.
+var ARCTIC_SHIFT_API = "https://arctic-shift.photon-reddit.com/api/";
+
+var cache = new Map();
+
+function get(url) {
+  if(!cache.has(url)) {
+    var request = fetchJson(url);
+    request.catch(function() { cache.delete(url); }); // retry failures next time
+    cache.set(url, request);
+  }
+  return cache.get(url);
+}
+
+// Arctic Shift answers "Timeout. Maybe slow down a bit" under load; retry once.
+async function fetchJson(url, retried) {
+  var response = await fetch(url);
+  var json = await response.json();
+  if(!response.ok || json.error) {
+    if(!retried) {
+      await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+      return fetchJson(url, true);
+    }
+    throw new Error("Arctic Shift: " + (json.error || response.status) + " for " + url);
+  }
+  return json.data;
+}
+
+chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
+  if(message.type != "get" || message.url.indexOf(ARCTIC_SHIFT_API) != 0) return;
+
+  get(message.url)
+    .then(function(data) { sendResponse({data: data}); })
+    .catch(function(e) {
+      console.warn(e);
+      sendResponse({error: String(e)});
+    });
+
+  return true; // async response
+});
