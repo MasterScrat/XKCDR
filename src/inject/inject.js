@@ -27,14 +27,12 @@ function comicImage() {
   return document.querySelector("#comic img");
 }
 
-// root page: find latest comic from "prev" link
-function comicUrl() {
-  if (window.location.pathname == "/") {
-    var prev = document.querySelector("a[rel=prev]");
-    var num = prev.pathname.replace(/\//g, "") * 1 + 1;
-    return window.location.origin + "/" + num + "/";
-  }
-  return window.location.href;
+// comic number from the URL; on the root page, deduce it from the "prev" link
+function comicNum() {
+  var match = window.location.pathname.match(/^\/(\d+)\/?$/);
+  if (match) return match[1] * 1;
+  var prev = document.querySelector("a[rel=prev]");
+  return prev ? prev.pathname.replace(/\//g, "") * 1 + 1 : null;
 }
 
 function worthy(comment) {
@@ -46,39 +44,60 @@ function worthy(comment) {
     blockedUsernames.indexOf(comment.author) == -1;
 }
 
-// Reddit's body_html is entity-escaped, sanitized markdown output. Decode it,
-// then keep only text and simple formatting, with absolute links.
-var ALLOWED_TAGS = ["P", "A", "EM", "STRONG", "DEL", "CODE", "PRE", "BLOCKQUOTE", "UL", "OL", "LI", "BR", "SUP"];
+// Comment bodies are Reddit markdown with &, < and > entity-escaped. Render a
+// small safe subset: paragraphs, quotes, links, bold and italics. Everything
+// else stays plain text; nothing is ever parsed as HTML.
+function decodeEntities(text) {
+  return text.replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+}
 
-function renderBody(bodyHtml) {
-  var decoded = new DOMParser().parseFromString(bodyHtml, "text/html").documentElement.textContent;
-  var doc = new DOMParser().parseFromString(decoded, "text/html");
-
-  function clean(node) {
-    Array.from(node.childNodes).forEach(function(child) {
-      if (child.nodeType != Node.ELEMENT_NODE) return;
-      clean(child);
-      if (ALLOWED_TAGS.indexOf(child.tagName) == -1) {
-        child.replaceWith.apply(child, Array.from(child.childNodes));
-        return;
-      }
-      var href = child.getAttribute("href");
-      Array.from(child.attributes).forEach(function(a) { child.removeAttribute(a.name); });
-      if (child.tagName == "A" && href) {
-        var url;
-        try { url = new URL(href, REDDIT_URL); } catch (e) { return; }
-        if (url.protocol == "https:" || url.protocol == "http:") {
-          child.setAttribute("href", url.href);
-          child.setAttribute("target", "_blank");
-          child.setAttribute("rel", "noopener");
-        }
-      }
-    });
+function safeUrl(href) {
+  try {
+    var url = new URL(href, REDDIT_URL);
+    return (url.protocol == "https:" || url.protocol == "http:") ? url.href : null;
+  } catch (e) {
+    return null;
   }
+}
 
-  clean(doc.body);
+var INLINE = /\[([^\]]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s)]+)|\*\*([^*]+)\*\*|\*([^*]+)\*/g;
+
+function renderInline(parent, text) {
+  var last = 0;
+  var m;
+  INLINE.lastIndex = 0;
+  while ((m = INLINE.exec(text))) {
+    parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+    var el;
+    var href = m[1] ? safeUrl(m[2]) : m[3] ? safeUrl(m[3]) : null;
+    if (href) {
+      el = document.createElement("a");
+      el.href = href;
+      el.target = "_blank";
+      el.rel = "noopener";
+      el.textContent = m[1] || m[3];
+    } else if (m[4] || m[5]) {
+      el = document.createElement(m[4] ? "strong" : "em");
+      el.textContent = m[4] || m[5];
+    } else {
+      el = document.createTextNode(m[0]);
+    }
+    parent.appendChild(el);
+    last = INLINE.lastIndex;
+  }
+  parent.appendChild(document.createTextNode(text.slice(last)));
+}
+
+function renderBody(body) {
   var fragment = document.createDocumentFragment();
-  Array.from(doc.body.childNodes).forEach(function(n) { fragment.appendChild(document.importNode(n, true)); });
+  decodeEntities(body).split(/\n\s*\n/).forEach(function(block) {
+    block = block.trim();
+    if (!block) return;
+    var quote = /^>/.test(block);
+    var p = document.createElement(quote ? "blockquote" : "p");
+    renderInline(p, quote ? block.replace(/^>\s?/gm, "") : block);
+    fragment.appendChild(p);
+  });
   return fragment;
 }
 
@@ -101,7 +120,7 @@ function displayComments(comments) {
     var div = document.createElement("div");
     div.className = "box xkcdr";
     div.style.width = COLUMN_WIDTH + "px";
-    div.appendChild(renderBody(comment.bodyHtml));
+    div.appendChild(renderBody(comment.body));
 
     var link = document.createElement("small");
     link.className = "xkcdr-author";
@@ -152,15 +171,17 @@ function show() {
     return;
   }
 
+  var num = comicNum();
+  if (!num) return;
+
   var img = comicImage();
   chrome.runtime.sendMessage({
     type: "getComments",
-    comicUrl: comicUrl(),
+    comicNum: num,
     imgUrl: img ? img.getAttribute("src") : null
   }, function(response) {
     if (!response || response.error) {
-      console.warn("XKCD+R: couldn't load Reddit comments. Are you logged into reddit.com?",
-        response && response.error);
+      console.warn("XKCD+R: couldn't load Reddit comments.", response && response.error);
       return;
     }
     cachedComments = response.comments;

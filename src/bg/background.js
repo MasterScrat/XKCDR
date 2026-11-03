@@ -1,12 +1,13 @@
-// Background service worker: owns the enabled/disabled toggle and all Reddit
-// requests (content scripts can't make cross-origin requests in MV3).
+// Background service worker: owns the enabled/disabled toggle and fetches
+// Reddit comments.
 //
-// Requests are made with the user's Reddit session cookies, since Reddit
-// rejects unauthenticated API calls. If the user isn't logged into Reddit,
-// requests fail and the content script shows nothing.
+// Reddit itself now blocks API calls without app credentials, so comments come
+// from Arctic Shift (https://github.com/ArthurHeitmann/arctic_shift), a free
+// archive of Reddit data. It's volunteer-run, so keep the request count low.
 
 var NAME = "XKCD+R";
 var REDDIT_URL = "https://www.reddit.com";
+var ARCTIC_SHIFT_API = "https://arctic-shift.photon-reddit.com/api";
 
 // minimum of points for a submission for its comments to be considered
 var SUBMISSION_THRESHOLD = 2;
@@ -41,69 +42,100 @@ chrome.action.onClicked.addListener(function() {
   });
 });
 
-// ---- Reddit ----
+// ---- Reddit (via Arctic Shift) ----
 
-async function redditGet(path) {
-  var response = await fetch(REDDIT_URL + path, { credentials: "include" });
-  if (!response.ok) {
-    throw new Error("Reddit returned " + response.status + " for " + path);
-  }
-  return response.json();
+// re-fetch a comic's comments at most once a day
+var CACHE_TTL = 24 * 3600 * 1000;
+
+function sleep(ms) {
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
 }
 
-// All the URL spellings a submission for this comic could have used.
-function urlVariants(comicUrl, imgUrl) {
-  var path = new URL(comicUrl).pathname.replace(/\/$/, "");
-  var variants = [];
-  ["https://", "http://"].forEach(function(scheme) {
-    ["xkcd.com", "www.xkcd.com", "m.xkcd.com"].forEach(function(host) {
-      variants.push(scheme + host + path + "/");
-      variants.push(scheme + host + path);
-    });
-  });
+// Arctic Shift answers "Timeout. Maybe slow down a bit" under load; retry once.
+async function archiveGet(path, params, retried) {
+  var response = await fetch(ARCTIC_SHIFT_API + path + "?" + new URLSearchParams(params));
+  var json = await response.json();
+  if (!response.ok || json.error) {
+    if (!retried) {
+      await sleep(2000);
+      return archiveGet(path, params, true);
+    }
+    throw new Error("Arctic Shift: " + (json.error || response.status) + " for " + path);
+  }
+  return json.data;
+}
+
+// URL search is a prefix match, so these also catch "?…" and "#…" suffixes.
+// Results are filtered back to this exact comic afterwards.
+function urlQueries(comicNum, imgUrl) {
+  var queries = ["https://xkcd.com/" + comicNum + "/", "http://xkcd.com/" + comicNum + "/"];
   if (imgUrl) {
     var img = imgUrl.replace(/^https?:/, "");
-    variants.push("https:" + img, "http:" + img);
+    queries.push("https:" + img, "http:" + img);
   }
-  return variants;
+  return queries;
 }
 
-async function findSubmissions(comicUrl, imgUrl) {
+function isComicUrl(url, comicNum, imgUrl) {
+  var img = imgUrl ? imgUrl.replace(/^https?:/, "") : null;
+  return new RegExp("^https?://xkcd\\.com/" + comicNum + "/([?#].*)?$").test(url) ||
+    (img && url.replace(/^https?:/, "").indexOf(img) == 0);
+}
+
+async function findSubmissions(comicNum, imgUrl) {
   var seen = {};
   var submissions = [];
-  for (var url of urlVariants(comicUrl, imgUrl)) {
-    var listing = await redditGet("/api/info.json?url=" + encodeURIComponent(url));
-    listing.data.children.forEach(function(child) {
-      var s = child.data;
-      if (!seen[s.id]) {
+  var failures = 0;
+  var queries = urlQueries(comicNum, imgUrl);
+  for (var url of queries) {
+    var posts;
+    try {
+      posts = await archiveGet("/posts/search", { url: url, limit: 100, fields: "id,url,subreddit,score,num_comments" });
+    } catch (e) {
+      console.warn(e);
+      failures++;
+      continue;
+    }
+    posts.forEach(function(s) {
+      if (!seen[s.id] && isComicUrl(s.url, comicNum, imgUrl)) {
         seen[s.id] = true;
         submissions.push(s);
       }
     });
   }
+  if (failures == queries.length) {
+    throw new Error("Arctic Shift unreachable");
+  }
   return submissions;
 }
 
-async function getComments(comicUrl, imgUrl) {
-  var submissions = (await findSubmissions(comicUrl, imgUrl)).filter(function(s) {
+async function fetchComments(comicNum, imgUrl) {
+  var submissions = (await findSubmissions(comicNum, imgUrl)).filter(function(s) {
     return s.num_comments > 0 &&
       s.score >= SUBMISSION_THRESHOLD &&
       typicalSubs.indexOf(s.subreddit.toLowerCase()) != -1;
   });
-  console.info(submissions.length + " relevant submissions for " + comicUrl);
+  console.info(submissions.length + " relevant submissions for xkcd " + comicNum);
 
   var comments = [];
   for (var s of submissions) {
-    var thread = await redditGet(s.permalink + ".json?sort=top&limit=" + NB_RETRIEVED_COMMENTS);
-    thread[1].data.children.forEach(function(c) {
+    var tree;
+    try {
+      // top-level comments only; replies make little sense out of context
+      tree = await archiveGet("/comments/tree", { link_id: s.id, limit: NB_RETRIEVED_COMMENTS });
+    } catch (e) {
+      console.warn(e);
+      continue;
+    }
+    tree.forEach(function(c) {
       if (c.kind != "t1") return; // "more" link
       comments.push({
         id: c.data.id,
         author: c.data.author,
         score: c.data.score,
         body: c.data.body,
-        bodyHtml: c.data.body_html,
-        permalink: REDDIT_URL + s.permalink + c.data.id + "/"
+        // archived permalinks are malformed for older threads; build our own
+        permalink: REDDIT_URL + "/r/" + s.subreddit + "/comments/" + s.id + "/_/" + c.data.id + "/"
       });
     });
   }
@@ -112,10 +144,22 @@ async function getComments(comicUrl, imgUrl) {
   return comments;
 }
 
+async function getComments(comicNum, imgUrl) {
+  var key = "comments:" + comicNum;
+  var cached = (await chrome.storage.local.get(key))[key];
+  if (cached && Date.now() - cached.at < CACHE_TTL) {
+    return cached.comments;
+  }
+
+  var comments = await fetchComments(comicNum, imgUrl);
+  await chrome.storage.local.set({ [key]: { at: Date.now(), comments: comments } });
+  return comments;
+}
+
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
   if (message.type != "getComments") return;
 
-  getComments(message.comicUrl, message.imgUrl)
+  getComments(message.comicNum, message.imgUrl)
     .then(function(comments) { sendResponse({ comments: comments }); })
     .catch(function(e) {
       console.warn(e);

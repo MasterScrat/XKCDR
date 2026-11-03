@@ -29,3 +29,10 @@
 .xkcdr:hover .xkcdr-author {
   display: block;
 }
+
+.xkcdr blockquote {
+  margin: 0.4em 0;
+  padding-left: 6px;
+  border-left: 2px solid #ccc;
+  color: #555;
+}

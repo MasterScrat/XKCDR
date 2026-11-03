@@ -21,5 +21,5 @@
       "matches": [ "https://xkcd.com/*" ]
    } ],
    "permissions": [ "storage" ],
-   "host_permissions": [ "https://www.reddit.com/*" ]
+   "host_permissions": [ "https://arctic-shift.photon-reddit.com/*" ]
 }
