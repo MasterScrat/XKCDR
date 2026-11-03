@@ -44,9 +44,6 @@ chrome.action.onClicked.addListener(function() {
 
 // ---- Reddit (via Arctic Shift) ----
 
-// re-fetch a comic's comments at most once a day
-var CACHE_TTL = 24 * 3600 * 1000;
-
 function sleep(ms) {
   return new Promise(function(resolve) { setTimeout(resolve, ms); });
 }
@@ -144,16 +141,18 @@ async function fetchComments(comicNum, imgUrl) {
   return comments;
 }
 
-async function getComments(comicNum, imgUrl) {
-  var key = "comments:" + comicNum;
-  var cached = (await chrome.storage.local.get(key))[key];
-  if (cached && Date.now() - cached.at < CACHE_TTL) {
-    return cached.comments;
-  }
+// comic number → promise of its comments, while the service worker is alive.
+// Chrome stops the worker after ~30s idle, which clears this, so new comics
+// and failed lookups are retried soon enough.
+var cache = new Map();
 
-  var comments = await fetchComments(comicNum, imgUrl);
-  await chrome.storage.local.set({ [key]: { at: Date.now(), comments: comments } });
-  return comments;
+function getComments(comicNum, imgUrl) {
+  if (!cache.has(comicNum)) {
+    var request = fetchComments(comicNum, imgUrl);
+    request.catch(function() { cache.delete(comicNum); }); // retry failures next time
+    cache.set(comicNum, request);
+  }
+  return cache.get(comicNum);
 }
 
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
