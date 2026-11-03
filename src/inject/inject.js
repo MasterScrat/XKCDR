@@ -169,7 +169,7 @@ function displayComments(comments) {
     a.href = comment.permalink;
     a.target = "_blank";
     a.rel = "noopener";
-    a.textContent = comment.author + " · " + comment.score;
+    a.textContent = comment.author;
     link.appendChild(a);
     div.appendChild(link);
 
