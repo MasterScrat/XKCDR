@@ -1,25 +1,26 @@
 {
-   "manifest_version": 3,
-   "name": "XKCD+R",
+   "background": {
+      "service_worker": "src/bg/background.js"
+   },
+   "content_scripts": [ {
+      "css": [  ],
+      "js": [ "src/inject/inject.js", "js/jquery/jquery.js" ],
+      "matches": [ "*://xkcd.com/*" ]
+   } ],
    "description": "Display Reddit's best comments along XKCD strips!",
-   "version": "0.1.0",
    "icons": {
       "128": "icons/icon128.png",
       "16": "icons/icon16.png",
       "48": "icons/icon48.png"
    },
+   "host_permissions": [ "https://arctic-shift.photon-reddit.com/*" ],
+   "manifest_version": 3,
+   "name": "XKCD+R",
    "action": {
       "default_icon": "icons/icon38.png",
       "default_title": "XKCD+R"
    },
-   "background": {
-      "service_worker": "src/bg/background.js"
-   },
-   "content_scripts": [ {
-      "js": [ "src/inject/inject.js" ],
-      "css": [ "src/inject/inject.css" ],
-      "matches": [ "https://xkcd.com/*" ]
-   } ],
    "permissions": [ "storage" ],
-   "host_permissions": [ "https://arctic-shift.photon-reddit.com/*" ]
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "0.1.0"
 }

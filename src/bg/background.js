@@ -1,168 +1,80 @@
-// Background service worker: owns the enabled/disabled toggle and fetches
-// Reddit comments.
-//
-// Reddit itself now blocks API calls without app credentials, so comments come
-// from Arctic Shift (https://github.com/ArthurHeitmann/arctic_shift), a free
-// archive of Reddit data. It's volunteer-run, so keep the request count low.
-
 var NAME = "XKCD+R";
-var REDDIT_URL = "https://www.reddit.com";
-var ARCTIC_SHIFT_API = "https://arctic-shift.photon-reddit.com/api";
 
-// minimum of points for a submission for its comments to be considered
-var SUBMISSION_THRESHOLD = 2;
+// browser started or extension installed: show the stored state on the icon
+chrome.runtime.onStartup.addListener(restoreEnabled);
+chrome.runtime.onInstalled.addListener(restoreEnabled);
 
-// max number of comments to retrieve per submission
-var NB_RETRIEVED_COMMENTS = 200;
+function restoreEnabled() {
+  chrome.storage.sync.get('disabled', function(disabled) {
+      console.log('enabled in storage: ' + !disabled.disabled);
 
-// only get comments from these subs
-var typicalSubs = ["comics", "xkcd", "xkcdcomic", "funny"];
-
-// ---- enable toggle ----
-
-function updateIcon(enabled) {
-  chrome.action.setIcon({ path: "/icons/icon38" + (enabled ? "" : "d") + ".png" });
-  chrome.action.setTitle({ title: NAME + (enabled ? "" : " (disabled)") });
+      setEnabled(!disabled.disabled);
+  });
 }
 
-chrome.runtime.onInstalled.addListener(function() {
-  chrome.storage.sync.get("disabled", function(s) { updateIcon(!s.disabled); });
-});
-
-chrome.runtime.onStartup.addListener(function() {
-  chrome.storage.sync.get("disabled", function(s) { updateIcon(!s.disabled); });
-});
-
-// user clicked the toolbar icon; content scripts react via storage.onChanged
-chrome.action.onClicked.addListener(function() {
-  chrome.storage.sync.get("disabled", function(s) {
-    var disabled = !s.disabled;
-    chrome.storage.sync.set({ disabled: disabled });
-    updateIcon(!disabled);
+// user clicked the toolbar icon
+chrome.action.onClicked.addListener(function(tab) {
+  chrome.storage.sync.get('disabled', function(disabled) {
+    setEnabled(disabled.disabled);
   });
 });
 
-// ---- Reddit (via Arctic Shift) ----
+// content scripts in every xkcd tab follow the stored state (storage.onChanged)
+function setEnabled(enabled) {
+  console.log('setEnabled: ' + enabled);
 
-function sleep(ms) {
-  return new Promise(function(resolve) { setTimeout(resolve, ms); });
+  var iconSuffix = "";
+  var titleSuffix = "";
+
+  if(!enabled) {
+    iconSuffix = "d";
+    titleSuffix = " (disabled)";
+  }
+
+  chrome.action.setIcon({path:"/icons/icon38"+iconSuffix+".png"});
+  chrome.action.setTitle({title:NAME + titleSuffix});
+
+  chrome.storage.sync.set({'disabled': !enabled});
+}
+
+// Arctic Shift requests from content scripts go through here, so that tabs
+// share one request per URL, and results are kept while this worker is alive.
+// Chrome stops the worker after ~30s idle, which clears the cache.
+var ARCTIC_SHIFT_API = "https://arctic-shift.photon-reddit.com/api/";
+
+var cache = new Map();
+
+function get(url) {
+  if(!cache.has(url)) {
+    var request = fetchJson(url);
+    request.catch(function() { cache.delete(url); }); // retry failures next time
+    cache.set(url, request);
+  }
+  return cache.get(url);
 }
 
 // Arctic Shift answers "Timeout. Maybe slow down a bit" under load; retry once.
-async function archiveGet(path, params, retried) {
-  var response = await fetch(ARCTIC_SHIFT_API + path + "?" + new URLSearchParams(params));
+async function fetchJson(url, retried) {
+  var response = await fetch(url);
   var json = await response.json();
-  if (!response.ok || json.error) {
-    if (!retried) {
-      await sleep(2000);
-      return archiveGet(path, params, true);
+  if(!response.ok || json.error) {
+    if(!retried) {
+      await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+      return fetchJson(url, true);
     }
-    throw new Error("Arctic Shift: " + (json.error || response.status) + " for " + path);
+    throw new Error("Arctic Shift: " + (json.error || response.status) + " for " + url);
   }
   return json.data;
 }
 
-// URL search is a prefix match, so these also catch "?…" and "#…" suffixes.
-// Results are filtered back to this exact comic afterwards.
-function urlQueries(comicNum, imgUrl) {
-  var queries = ["https://xkcd.com/" + comicNum + "/", "http://xkcd.com/" + comicNum + "/"];
-  if (imgUrl) {
-    var img = imgUrl.replace(/^https?:/, "");
-    queries.push("https:" + img, "http:" + img);
-  }
-  return queries;
-}
-
-function isComicUrl(url, comicNum, imgUrl) {
-  var img = imgUrl ? imgUrl.replace(/^https?:/, "") : null;
-  return new RegExp("^https?://xkcd\\.com/" + comicNum + "/([?#].*)?$").test(url) ||
-    (img && url.replace(/^https?:/, "").indexOf(img) == 0);
-}
-
-async function findSubmissions(comicNum, imgUrl) {
-  var seen = {};
-  var submissions = [];
-  var failures = 0;
-  var queries = urlQueries(comicNum, imgUrl);
-  for (var url of queries) {
-    var posts;
-    try {
-      posts = await archiveGet("/posts/search", { url: url, limit: 100, fields: "id,url,subreddit,score,num_comments" });
-    } catch (e) {
-      console.warn(e);
-      failures++;
-      continue;
-    }
-    posts.forEach(function(s) {
-      if (!seen[s.id] && isComicUrl(s.url, comicNum, imgUrl)) {
-        seen[s.id] = true;
-        submissions.push(s);
-      }
-    });
-  }
-  if (failures == queries.length) {
-    throw new Error("Arctic Shift unreachable");
-  }
-  return submissions;
-}
-
-async function fetchComments(comicNum, imgUrl) {
-  var submissions = (await findSubmissions(comicNum, imgUrl)).filter(function(s) {
-    return s.num_comments > 0 &&
-      s.score >= SUBMISSION_THRESHOLD &&
-      typicalSubs.indexOf(s.subreddit.toLowerCase()) != -1;
-  });
-  console.info(submissions.length + " relevant submissions for xkcd " + comicNum);
-
-  var comments = [];
-  for (var s of submissions) {
-    var tree;
-    try {
-      // top-level comments only; replies make little sense out of context
-      tree = await archiveGet("/comments/tree", { link_id: s.id, limit: NB_RETRIEVED_COMMENTS });
-    } catch (e) {
-      console.warn(e);
-      continue;
-    }
-    tree.forEach(function(c) {
-      if (c.kind != "t1") return; // "more" link
-      comments.push({
-        id: c.data.id,
-        author: c.data.author,
-        score: c.data.score,
-        body: c.data.body,
-        // archived permalinks are malformed for older threads; build our own
-        permalink: REDDIT_URL + "/r/" + s.subreddit + "/comments/" + s.id + "/_/" + c.data.id + "/"
-      });
-    });
-  }
-
-  comments.sort(function(a, b) { return b.score - a.score; });
-  return comments;
-}
-
-// comic number → promise of its comments, while the service worker is alive.
-// Chrome stops the worker after ~30s idle, which clears this, so new comics
-// and failed lookups are retried soon enough.
-var cache = new Map();
-
-function getComments(comicNum, imgUrl) {
-  if (!cache.has(comicNum)) {
-    var request = fetchComments(comicNum, imgUrl);
-    request.catch(function() { cache.delete(comicNum); }); // retry failures next time
-    cache.set(comicNum, request);
-  }
-  return cache.get(comicNum);
-}
-
 chrome.runtime.onMessage.addListener(function(message, sender, sendResponse) {
-  if (message.type != "getComments") return;
+  if(message.type != "get" || message.url.indexOf(ARCTIC_SHIFT_API) != 0) return;
 
-  getComments(message.comicNum, message.imgUrl)
-    .then(function(comments) { sendResponse({ comments: comments }); })
+  get(message.url)
+    .then(function(data) { sendResponse({data: data}); })
     .catch(function(e) {
       console.warn(e);
-      sendResponse({ error: String(e) });
+      sendResponse({error: String(e)});
     });
 
   return true; // async response
