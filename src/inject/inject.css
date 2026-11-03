@@ -4,7 +4,6 @@
   box-sizing: border-box;
   padding: 0 2px 14px 2px;
   overflow: hidden;
-  text-align: left;
   opacity: 0;
   transform: translateX(var(--xkcdr-slide, 0));
   transition: opacity var(--xkcdr-duration, 300ms), transform var(--xkcdr-duration, 300ms);
